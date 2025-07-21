@@ -16,14 +16,16 @@ from typing import Optional, Dict, List, Tuple
 import os
 from pathlib import Path
 import re
-
+import pickle
 import time
 import uuid
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import requests
 from multiprocessing import Manager
 
-OUTPUT_PATH = "java_validation_code.json"
+
+
+OUTPUT_PATH = "RLAIF_estimation_code.json"
 
 SONAR_HOST = "http://localhost:9000"
 SONAR_TOKEN = "squ_7be58e5f386c00dbdfc8e1a3df15ad1934426e66"          # ← exporta antes de ejecutar
@@ -31,12 +33,18 @@ INPUT_JSON  = "code_refinement_dataset.json"                  # lista de dicts c
 SCANNER_CMD = ["/home/david/sonar-scanner-7.1.0.4889-linux-x64/bin/sonar-scanner"]                # ← o ['docker','run','--rm', ...]
 SCAN_TIMEOUT_SEC = 300                             # seg. máx. por snippet
 POLL_INTERVAL   = 2                               # seg. entre chequeos CE
-MAX_PARALLEL     = 4        # núm. de SonarScanners concurrentes
+MAX_PARALLEL     = 8        # núm. de SonarScanners concurrentes
 USE_DOCKER_SCANNER = False  # True ⇒ usa la imagen sonarsource/sonar-scanner-cli
 
 
 # Ruta al binario local (solo si USE_DOCKER_SCANNER = False)
 LOCAL_SCANNER_BIN = "/home/david/sonar-scanner-7.1.0.4889-linux-x64/bin/sonar-scanner"
+
+MIN_OFFSET = 1_500_000  # requisito ❷
+PROGRESS_FILE = Path("progress.txt")
+HASHES_FILE = Path("hashes.pickle")  # hashes ya vistos (dedup)
+CHECK_EVERY = 1_000  # guarda progreso cada N filas
+
 
 def run(cmd: List[str], cwd: Path) -> None:
     """Ejecuta un sub-proceso y lanza excepción si sale con código ≠ 0"""
@@ -218,7 +226,7 @@ def corpus(row, seen_hashes):
     num_token_estimacion = int(
         len(code) / 4.2 + 0.5)  # A groso modo, es una regla de estimación con un 10% / 20% de error
 
-    if num_lineas < 250:
+    if num_lineas < 250 and num_token_estimacion < 1400:
         with tempfile.TemporaryDirectory() as tmpdir:
             file = nombre_archivo_java(code)
             src_path = Path(tmpdir)
@@ -242,27 +250,84 @@ def corpus(row, seen_hashes):
                                 "path": row.get("path"),
                                 "repository": row.get("repository_name"),
                                 "license": row.get("licenses"),
-                                "issues": issues[0]
+                                "issues": issues[0],
+                                "Num_token_estimado": num_token_estimacion,
+                                "Nombre del archivo": file
                             }
                         return snippet
 
     return None
+
+
+
 def main():
 
+    def checkpoint(current_idx: int) -> None:
+        PROGRESS_FILE.write_text(str(current_idx))
+        with open(HASHES_FILE, "wb") as fh:
+            pickle.dump(dict(seen_hashes), fh)
+        if snippets:
+            with open(OUTPUT_PATH, "w", encoding="utf-8") as fh:
+                json.dump(existing_snippets + snippets, fh,
+                          ensure_ascii=False, indent=2)
+        print(f"✓ Checkpoint en idx {current_idx:,}  "
+              f"({len(existing_snippets)+len(snippets):,} fragmentos totales)")
+
+    try:
+        OFFSET = max(MIN_OFFSET, int(PROGRESS_FILE.read_text().strip()))
+    except (FileNotFoundError, ValueError):
+        OFFSET = MIN_OFFSET
 
     # --- carga de The Stack en modo streaming -----------------------------
     print("Conectando con The Stack (Java)…")
     dset = load_dataset(
         "bigcode/the-stack",
-        data_dir="data/java",   # solo subcarpeta Java
+        data_dir="data/java",
         split="train",
         streaming=True,
-        use_auth_token=None,   # None = usará credenciales por defecto
-    )  # :contentReference[oaicite:0]{index=0}
+        use_auth_token=None,
+    ).skip(OFFSET)
 
     manager      = Manager()
     seen_hashes  = manager.dict()
+
+    print(f"→ Reanudando desde índice global {OFFSET:,}")
+
+    # ❸ Carga del JSON con snippets ya extraídos
+    existing_snippets: list[dict] = []
+    if Path(OUTPUT_PATH).exists():
+        try:
+            with open(OUTPUT_PATH, "r", encoding="utf-8") as fh:
+                existing_snippets = json.load(fh)
+            print(f"  {len(existing_snippets):,} fragmentos previos encontrados")
+        except json.JSONDecodeError:
+            print("⚠️  El JSON existente está corrupto; se ignora")
+
+    print("# Pickle load")
+
+    if HASHES_FILE.exists():
+        with open(HASHES_FILE, "rb") as fh:
+            persisted_hashes = pickle.load(fh)
+    else:
+        persisted_hashes = {}
+
+    print("# MD5 computing")
+    # incluye los hashes de los snippets ya guardados
+    for snip in existing_snippets:
+        h = hashlib.md5(snip["content"].encode()).hexdigest()
+        persisted_hashes[h] = True
+
+
+    manager      = Manager()
+    seen_hashes  = manager.dict(persisted_hashes)
+
+    # contenedor para NUEVOS fragmentos de esta sesión
     snippets     = []
+
+    # `idx` es el índice global (se inicia en OFFSET)
+    idx = OFFSET
+
+    print("# Iniciando descarga")
 
     try:
         with ProcessPoolExecutor(max_workers=MAX_PARALLEL) as pool:
@@ -271,6 +336,8 @@ def main():
                 fut = pool.submit(corpus, row, seen_hashes)
                 in_flight.add(fut)
 
+                idx += 1
+
                 # Mantén solo un número razonable de tareas en vuelo
                 if len(in_flight) >= MAX_PARALLEL * 4:
                     for done in as_completed(in_flight, timeout=None):
@@ -278,7 +345,10 @@ def main():
                         res = done.result()
                         if res:
                             snippets.append(res)
-                    tqdm.write(f"Guardados {len(snippets)} fragmentos")
+                    tqdm.write(f"Guardados {len(snippets + existing_snippets)} fragmentos")
+
+                if idx % CHECK_EVERY == 0:
+                    checkpoint(idx)
 
             # drena lo que quede
             for done in as_completed(in_flight):
@@ -288,13 +358,21 @@ def main():
 
     except KeyboardInterrupt:
         # --- guardar -----------------------------------------------------------
-        print(f"\nGuardados {len(snippets)} fragmentos")
+        print(f"\nGuardados {len(snippets + existing_snippets)} fragmentos")
+
         with open(OUTPUT_PATH, "w", encoding="utf-8") as f:
-            json.dump(snippets, f, ensure_ascii=False, indent=2)
+            if snippets:
+                with open(OUTPUT_PATH, "w", encoding="utf-8") as fh:
+                    json.dump(existing_snippets + snippets, fh,
+                              ensure_ascii=False, indent=2)
     finally:
-        print(f"\nGuardados {len(snippets)} fragmentos")
+        print(f"\nGuardados {len(snippets + existing_snippets)} fragmentos")
+        print("idx: ", idx)
         with open(OUTPUT_PATH, "w", encoding="utf-8") as f:
-            json.dump(snippets, f, ensure_ascii=False, indent=2)
+            if snippets:
+                with open(OUTPUT_PATH, "w", encoding="utf-8") as fh:
+                    json.dump(existing_snippets + snippets, fh,
+                              ensure_ascii=False, indent=2)
 
 
 if __name__ == "__main__":

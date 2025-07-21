@@ -13,7 +13,6 @@ OUT_DIR      = Path("dataset/glue_code")    # Carpeta destino
 INST_OPEN  = "<s>"
 INST_CLOSE = "</s>"
 NL         = "\n"
-
 PROMPT_TMPL = (
     "{inst_open} Eres un experto en Java. Corrige el siguiente fragmento de código:"
     "{nl}```java{nl}{before}{nl}```{nl}{inst_close}{nl}"

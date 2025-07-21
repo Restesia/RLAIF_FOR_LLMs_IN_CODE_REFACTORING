@@ -1,6 +1,7 @@
 Modelos/
 checkpoints/
 dataset/
+dpo-llama2-refactor/
 
 code_refinement_dataset.json
 glue_code_train.jsonl
@@ -8,4 +9,19 @@ snippets_with_issues.json
 snippets_with_issues.jsonl
 java_420.json
 java_validation_code.json
-
+Base_veryfied.json
+FT_veryfied.json
+glue_code_train.jsonl
+hashes.pickle
+java_420.json
+java_validation_code.json
+progress.txt
+prueba.json
+RLAIF_DPO_dset1.jsonl
+RLAIF_DPO_dset2.jsonl
+RLAIF_DPO_dset_final.jsonl
+RLAIF_estimation_code.json
+RLAIF_veryfied.json
+skipped.txt
+snippets_with_issues.json
+snippets_with_issues.jsonl
