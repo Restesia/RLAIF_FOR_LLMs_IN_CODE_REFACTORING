@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
-extrae_snippets_stack.py
+download_snippets_stack.py
 --------------------------------
 Descarga N fragmentos de código Java desde The Stack y los guarda en JSON.
-Requiere:  pip install datasets tqdm
+
+No necesita parámetros, retoma la descarga por donde iba.
 """
 
 import json
@@ -30,6 +31,8 @@ OUTPUT_PATH = "RLAIF_estimation_code.json"
 SONAR_HOST = "http://localhost:9000"
 SONAR_TOKEN = "squ_7be58e5f386c00dbdfc8e1a3df15ad1934426e66"          # ← exporta antes de ejecutar
 INPUT_JSON  = "code_refinement_dataset.json"                  # lista de dicts con "content"
+#INTRUDUCCIÓN RECIENTE, 22-07-25, ARCHIVO JSONL PARA LA ESCRITURA DIRECTA
+OUTPUT_JSONL = Path("verification_dset(lONGV2).jsonL")
 SCANNER_CMD = ["/home/david/sonar-scanner-7.1.0.4889-linux-x64/bin/sonar-scanner"]                # ← o ['docker','run','--rm', ...]
 SCAN_TIMEOUT_SEC = 300                             # seg. máx. por snippet
 POLL_INTERVAL   = 2                               # seg. entre chequeos CE
@@ -40,7 +43,9 @@ USE_DOCKER_SCANNER = False  # True ⇒ usa la imagen sonarsource/sonar-scanner-c
 # Ruta al binario local (solo si USE_DOCKER_SCANNER = False)
 LOCAL_SCANNER_BIN = "/home/david/sonar-scanner-7.1.0.4889-linux-x64/bin/sonar-scanner"
 
-MIN_OFFSET = 1_500_000  # requisito ❷
+
+
+MIN_OFFSET = 0  # requisito ❷
 PROGRESS_FILE = Path("progress.txt")
 HASHES_FILE = Path("hashes.pickle")  # hashes ya vistos (dedup)
 CHECK_EVERY = 1_000  # guarda progreso cada N filas
@@ -216,6 +221,19 @@ def eliminar_comentarios_java(codigo: str) -> str:
     )
     return re.sub(patron, "", codigo)
 
+
+def contiene_clase(java_src: str) -> bool:
+    """
+    Devuelve True si el archivo contiene al menos una clase.
+    """
+
+    patron_clase = re.compile(
+        r'\bclass\s+[A-Za-z_][A-Za-z0-9_]*\b',
+        re.MULTILINE
+    )
+
+    return bool(patron_clase.search(java_src))
+
 def corpus(row, seen_hashes):
 
     code = row["content"]
@@ -226,7 +244,7 @@ def corpus(row, seen_hashes):
     num_token_estimacion = int(
         len(code) / 4.2 + 0.5)  # A groso modo, es una regla de estimación con un 10% / 20% de error
 
-    if num_lineas < 250 and num_token_estimacion < 1400:
+    if num_lineas < 250 and num_token_estimacion < 1400 and contiene_clase(code):
         with tempfile.TemporaryDirectory() as tmpdir:
             file = nombre_archivo_java(code)
             src_path = Path(tmpdir)
@@ -238,23 +256,19 @@ def corpus(row, seen_hashes):
                 issues = analyze_file(src_path)
                 tqdm.write(f"Fue analizado por SonarQube, {len(issues[0])} issues detectadas")
 
-                if len(issues) > 1:
-                    h = hashlib.md5(code.encode()).hexdigest()
-                    if not h in seen_hashes:
+                if len(issues[0]) > 2:
 
-
-                        seen_hashes[h] = True
-
-                        snippet = {
-                                "content": code,
-                                "path": row.get("path"),
-                                "repository": row.get("repository_name"),
-                                "license": row.get("licenses"),
-                                "issues": issues[0],
-                                "Num_token_estimado": num_token_estimacion,
-                                "Nombre del archivo": file
-                            }
-                        return snippet
+                    # print("No llega aquí porque h se considera visto todo el rato")
+                    snippet = {
+                            "content": code,
+                            "path": row.get("path"),
+                            "repository": row.get("repository_name"),
+                            "license": row.get("licenses"),
+                            "issues": issues[0],
+                            "Num_token_estimado": num_token_estimacion,
+                            "Nombre del archivo": file
+                        }
+                    return snippet
 
     return None
 
@@ -287,9 +301,12 @@ def main():
         streaming=True,
         use_auth_token=None,
     ).skip(OFFSET)
-
     manager      = Manager()
     seen_hashes  = manager.dict()
+
+    # CARGANDO FICHERO PARA EL GUARDADO DIRECTO
+    out_mode = "a" if OUTPUT_JSONL.exists() else "w"
+    out_f = OUTPUT_JSONL.open(out_mode, encoding="utf-8")
 
     print(f"→ Reanudando desde índice global {OFFSET:,}")
 
@@ -344,8 +361,11 @@ def main():
                         in_flight.remove(done)
                         res = done.result()
                         if res:
+                            tqdm.write("Guardando")
+                            # GUARDADO DIRECTO EN JSONL
                             snippets.append(res)
-                    tqdm.write(f"Guardados {len(snippets + existing_snippets)} fragmentos")
+                            out_f.write(json.dumps(res, ensure_ascii=False) + "\n")
+                    tqdm.write(f"Guardados {len(snippets) + len(existing_snippets)} fragmentos")
 
                 if idx % CHECK_EVERY == 0:
                     checkpoint(idx)

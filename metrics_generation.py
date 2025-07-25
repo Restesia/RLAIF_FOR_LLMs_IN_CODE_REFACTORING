@@ -5,6 +5,7 @@ import tempfile
 import subprocess
 import os
 import re
+from pathlib import Path
 from tqdm import tqdm
 from collections import defaultdict
 
@@ -54,6 +55,8 @@ def main(path):
     total_added = 0
     not_compiling = 0
     per_snippet = []
+    not_compiling_list = []
+    OUTPUT_JSON = Path("RLAIF_not_building.json")
 
     errors = 0
 
@@ -83,11 +86,18 @@ def main(path):
         if after != None:
             # Compilar el código refactorizado
             with tempfile.TemporaryDirectory() as tmp:
-                ok, _ = write_and_compile(itm.get('code_after', ''), tmp)
+                ok, error = write_and_compile(itm.get('code_after', ''), tmp)
             if not ok:
                 not_compiling += 1
+                pair = {"code:": itm.get('code_after', ''), "Error" : error}
+                not_compiling_list.append(pair)
+
 
             per_snippet.append({'idx': idx, 'fixed': fixed, 'added': added})
+
+
+
+
 
     # Salida
     print("=== Summary ===")
@@ -98,8 +108,12 @@ def main(path):
 
 
     print("=== Details per snippet ===")
-    for sn in per_snippet:
-        print(f"[{sn['idx']}] fixed={sn['fixed']} added={sn['added']}")
+    #for sn in per_snippet:
+    #    print(f"[{sn['idx']}] fixed={sn['fixed']} added={sn['added']}")
+    OUTPUT_JSON.write_text(
+        json.dumps(not_compiling_list, ensure_ascii=False, indent=2),
+        encoding="utf-8"
+    )
 
 
 if __name__ == '__main__':

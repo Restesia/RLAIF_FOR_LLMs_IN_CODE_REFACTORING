@@ -19,8 +19,7 @@ Quick start (single‑GPU RTX 4090):
         --output_dir checkpoints/llama2-7b-mss4j \
         --epochs 1
 
-Main dependencies:
-    pip install "transformers>=5.0" "peft>=0.10" bitsandbytes accelerate datasets tqdm
+
 """
 
 from __future__ import annotations
