@@ -152,24 +152,24 @@ def load_pipeline() -> TextGenerationPipeline:
     return TextGenerationPipeline(model=model, tokenizer=tokenizer)
 # ---------------------------------------------
 
-# -------------  BATCH INFERENCE --------------
-@torch.inference_mode()
-def infer_batch(
-    pipe: TextGenerationPipeline,
-    snippets: List[Dict[str, Any]],
-) -> List[str]:
-    prompts = [build_prompt(s["content"], s["issues"]) for s in snippets]
+## -------------  BATCH INFERENCE --------------
+#@torch.inference_mode()
+#def infer_batch(
+#    pipe: TextGenerationPipeline,
+#    snippets: List[Dict[str, Any]],
+#) -> List[str]:
+#    prompts = [build_prompt(s["content"], s["issues"]) for s in snippets]
     # transformers ≥ 4.40 devuelve list[dict]; compatibilidad con versiones previas
-    raw_outputs = pipe(
-        prompts,
-        max_new_tokens=MAX_NEW_TOKENS,
-        do_sample=False,
-        return_full_text=False,
-    )
-    # raw_outputs puede ser list[str] o list[list[dict]]
-    if isinstance(raw_outputs[0], str):
-        return raw_outputs
-    return [out[0]["generated_text"] for out in raw_outputs]
+#    raw_outputs = pipe(
+#        prompts,
+#        max_new_tokens=MAX_NEW_TOKENS,
+#        do_sample=False,
+#        return_full_text=False,
+#    )
+#    # raw_outputs puede ser list[str] o list[list[dict]]
+#    if isinstance(raw_outputs[0], str):
+#        return raw_outputs
+#    return [out[0]["generated_text"] for out in raw_outputs]
 
 
 # -------------  BATCH INFERENCE -------------- (Issue per issue)
