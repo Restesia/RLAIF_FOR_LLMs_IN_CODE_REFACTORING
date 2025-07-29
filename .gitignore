@@ -27,3 +27,5 @@ snippets_with_issues.json
 snippets_with_issues.jsonl
 verification_dset(lONGV2).jsonL
 RLAIF_not_building.json
+.env
+verification_dset_LongV2.jsonl
