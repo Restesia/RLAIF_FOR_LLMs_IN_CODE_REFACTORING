@@ -54,6 +54,8 @@ def main(path):
     total_fixed = 0
     total_added = 0
     not_compiling = 0
+    Total_issues_before = 0
+    Total_issues_after = 0
     per_snippet = []
     not_compiling_list = []
     OUTPUT_JSON = Path("RLAIF_not_building.json")
@@ -62,28 +64,27 @@ def main(path):
 
     for idx, itm in tqdm(enumerate(data, 1)):
         before = issues_as_set(itm.get('issues_before', []))
-
+        err = False
         raw_after = itm.get('issues_after', [])
         # Normalizar por si viene doblemente anidado [[...], ""]
         if isinstance(raw_after, list) and len(raw_after) == 2 and isinstance(raw_after[0], list):
             after = issues_as_set(raw_after[0])
-            fixed = len(before - after)
-            added = len(after - before)
-            total_fixed += fixed
-            total_added += added
         elif not isinstance(raw_after, str):
             after = issues_as_set(raw_after)
-            fixed = len(before - after)
-            added = len(after - before)
-            total_fixed += fixed
-            total_added += added
         else:
             errors = errors + 1
             after = None
+            err = True
 
 
 
-        if after != None:
+        if not err:
+            Total_issues_before += len(before)
+            Total_issues_after += len(after)
+            fixed = len(before - after)
+            added = len(after - before)
+            total_fixed += fixed
+            total_added += added
             # Compilar el código refactorizado
             with tempfile.TemporaryDirectory() as tmp:
                 ok, error = write_and_compile(itm.get('code_after', ''), tmp)
@@ -101,13 +102,15 @@ def main(path):
 
     # Salida
     print("=== Summary ===")
+    print(f"Total issues before    : {Total_issues_before}")
+    print(f"Total issues after     : {Total_issues_after}")
     print(f"Total issues fixed     : {total_fixed}")
     print(f"Total issues introduced: {total_added}")
     print(f"Snippets not compiling : {not_compiling}\n")
     print(f"Total SonarQube Errors: {errors}")
 
 
-    print("=== Details per snippet ===")
+    #print("=== Details per snippet ===")
     #for sn in per_snippet:
     #    print(f"[{sn['idx']}] fixed={sn['fixed']} added={sn['added']}")
     OUTPUT_JSON.write_text(

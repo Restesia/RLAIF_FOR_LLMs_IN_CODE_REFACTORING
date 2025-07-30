@@ -10,6 +10,7 @@ import subprocess
 import re
 import tempfile
 from typing import Optional, Dict, List, Tuple
+from copy import deepcopy
 
 from peft import PeftModel
 
@@ -23,13 +24,14 @@ from tqdm import tqdm
 
 # ------------- CONFIGURACIÓN -----------------
 MODEL_PATH = Path("./Modelos/llama2-7b")   # cámbialo para tu FT
-BASE_MODEL   = Path("./Modelos/llama2-7b")             # pesos originales
-#ADAPTER_PATH = Path("checkpoints/llama2-7b-mss4j") # STF
-ADAPTER_PATH = Path("dpo-llama2-refactor") # STF
+BASE_MODEL   = Path("./Modelos/llama2-7b")             # pesos originales verification_dset_LongV2.jsonl
+ADAPTER_PATH = Path("checkpoints/llama2-7b-mss4j") # STF
+#ADAPTER_PATH = Path("dpo-llama2-refactor") # RLAIF
 BATCH_SIZE = 4 # ajusta (≤ 6) según VRAM y prompt len
-MAX_NEW_TOKENS = 256                       # tope de salida
+MAX_NEW_TOKENS = 1024                       # tope de salida
 ANALYSIS_WORKERS = 8                       # nº procesos SonarQube
-INPUT_JSON = Path("java_validation_code.json")
+#INPUT_JSON = Path("java_validation_code.json")
+INPUT_JSON = Path("verification_dset_LongV2.jsonl")
 OUTPUT_JSON = Path("RLAIF_veryfied.json")
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 MAX_PROMPT_TOKENS = 1024     # ignora ejemplos más largos
@@ -71,7 +73,7 @@ def build_prompt(code: str, issues: list[dict]) -> str:
     prompt = (
         "### Instructions:\n"
         "You are an expert Java assistant. Rewrite the code to fix the "
-        "problems listed below while preserving its original functionality. Returns only the corrected code.\n\n"
+        "problems listed below while preserving its original functionality. Returns only the corrected code, do not add any other text.\n\n"
         "### Original code:\n"
         f"{code}\n\n"
         "### List of problems:\n"
@@ -105,51 +107,51 @@ def prompt_token_length(tokenizer, code: str, issues: list[dict]) -> int:
 # ---------------------------------------------
 
 # ----  CARGA MODELO Y PREPARA PIPELINE -------
-# def load_pipeline(model_path: Path = MODEL_PATH) -> TextGenerationPipeline:
-#     tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=True)
-#
-#     if tokenizer.pad_token_id is None:
-#         tokenizer.pad_token = tokenizer.eos_token
-#         tokenizer.pad_token_id = tokenizer.eos_token_id
-#     model = AutoModelForCausalLM.from_pretrained(
-#         model_path,
-#         torch_dtype=torch.float16 if DEVICE == "cuda" else torch.float32,
-#         device_map="auto",
-#         low_cpu_mem_usage=True,
-#     )
-#     return TextGenerationPipeline(
-#         model=model,
-#         tokenizer=tokenizer,
-#         torch_dtype=model.dtype,
-#         batch_size=BATCH_SIZE,
-#     )
+def load_pipeline(model_path: Path = MODEL_PATH) -> TextGenerationPipeline:
+    tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=True)
 
-def load_pipeline() -> TextGenerationPipeline:
-    # Usa el tokenizer guardado junto al adapter,
-    # así aprovecha los mismos tokens especiales que añadaste al FT.
-    tokenizer = AutoTokenizer.from_pretrained(ADAPTER_PATH, use_fast=True)
-
-    # Garantiza pad_token
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
         tokenizer.pad_token_id = tokenizer.eos_token_id
-
-    # 1️⃣  carga los pesos base en GPU con Accelerate
-    base_model = AutoModelForCausalLM.from_pretrained(
-        BASE_MODEL,
-        torch_dtype=torch.float16,
+    model = AutoModelForCausalLM.from_pretrained(
+        model_path,
+        torch_dtype=torch.float16 if DEVICE == "cuda" else torch.float32,
         device_map="auto",
         low_cpu_mem_usage=True,
     )
+    return TextGenerationPipeline(
+        model=model,
+        tokenizer=tokenizer,
+        torch_dtype=model.dtype,
+        batch_size=BATCH_SIZE,
+    )
+
+#def load_pipeline() -> TextGenerationPipeline:
+    # Usa el tokenizer guardado junto al adapter,
+    # así aprovecha los mismos tokens especiales que añadaste al FT.
+#    tokenizer = AutoTokenizer.from_pretrained(ADAPTER_PATH, use_fast=True)
+
+    # Garantiza pad_token
+#    if tokenizer.pad_token_id is None:
+#        tokenizer.pad_token = tokenizer.eos_token
+#        tokenizer.pad_token_id = tokenizer.eos_token_id
+
+    # 1️⃣  carga los pesos base en GPU con Accelerate
+#    base_model = AutoModelForCausalLM.from_pretrained(
+#        BASE_MODEL,
+#        torch_dtype=torch.float16,
+#        device_map="auto",
+#        low_cpu_mem_usage=True,
+#    )
 
     # 2️⃣  le inyecta el adapter LoRA
-    model = PeftModel.from_pretrained(base_model, ADAPTER_PATH)
+#    model = PeftModel.from_pretrained(base_model, ADAPTER_PATH)
 
     # (opcional) fusiona las matrices LoRA y libera memoria
-    model = model.merge_and_unload()     # ↩️ quítalo si prefieres mantener el adapter separado
+#    model = model.merge_and_unload()     # ↩️ quítalo si prefieres mantener el adapter separado
 
-    # 3️⃣  crea la pipeline SIN el argumento `device=`
-    return TextGenerationPipeline(model=model, tokenizer=tokenizer)
+#    # 3️⃣  crea la pipeline SIN el argumento `device=`
+#    return TextGenerationPipeline(model=model, tokenizer=tokenizer)
 # ---------------------------------------------
 
 ## -------------  BATCH INFERENCE --------------
@@ -182,11 +184,15 @@ def infer_batch(
     prompts = []
     idxL = []
     code = [s["content"] for s in snippets]
-    while all(len(s["issues"]) == 0 for s in snippets):
-        for idx, s in snippets:
+    snpt = deepcopy(snippets)
+    while not all(len(s["issues"]) == 0 for s in snpt):
+        for idx, s in enumerate(snpt):
             if s["issues"] != []:
                 prompts.append(build_prompt(code[idx], [s["issues"].pop(0)]))
                 idxL.append(idx)
+        
+        if not prompts:
+            break
 
         raw_outputs = pipe(
         prompts,
@@ -194,13 +200,15 @@ def infer_batch(
         do_sample=False,
         return_full_text=False,
         )
-        if isinstance(raw_outputs[0], str):
-            for idx2, s in raw_outputs:
-                code[idxL[idx2]] = s
-        else:
+        if isinstance(raw_outputs[0], dict) and "generated_text" in raw_outputs[0]:
+            filtred_raw_code = [out["generated_text"] for out in raw_outputs]
+        elif isinstance(raw_outputs[0], list):
             filtred_raw_code = [out[0]["generated_text"] for out in raw_outputs]
-            for idx2, s in filtred_raw_code:
-                code[idxL[idx2]] = s
+        else:
+            filtred_raw_code = raw_outputs
+
+        for idx2, s in enumerate(filtred_raw_code):
+            code[idxL[idx2]] = s
 
         prompts = []
         idxL = []
@@ -359,7 +367,8 @@ def analyze_snippet(snippet: str) -> Tuple[List[Dict], str]:
 
 
 def main() -> None:
-    data: List[Dict[str, Any]] = json.loads(INPUT_JSON.read_text(encoding="utf-8"))
+    data: List[Dict[str, Any]] = [json.loads(line) for line in INPUT_JSON.read_text(encoding="utf-8").splitlines()][:100]
+
     pipe = load_pipeline()
     tokenizer = pipe.tokenizer
 
